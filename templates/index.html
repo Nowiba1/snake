@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SNAKE.IO — Multiplayer</title>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #080c10;
+    --surface:  #0d1520;
+    --border:   #1a2840;
+    --green:    #00ff88;
+    --red:      #ff4466;
+    --blue:     #44aaff;
+    --yellow:   #ffb800;
+    --dim:      #3a5070;
+    --text:     #c8dff0;
+    --muted:    #4a6880;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* Grid background */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,255,136,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,136,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #app { position: relative; z-index: 1; width: 100%; max-width: 900px; padding: 0 1rem; }
+
+  /* ── HEADER ── */
+  header {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+  .logo {
+    font-family: 'Orbitron', monospace;
+    font-weight: 900;
+    font-size: clamp(1.8rem, 5vw, 3rem);
+    color: var(--green);
+    letter-spacing: 0.15em;
+    text-shadow: 0 0 20px rgba(0,255,136,0.4), 0 0 40px rgba(0,255,136,0.15);
+  }
+  .logo span { color: var(--text); }
+  .tagline { font-size: 0.7rem; color: var(--muted); letter-spacing: 0.3em; margin-top: 4px; }
+
+  /* ── LOBBY SCREEN ── */
+  #lobby {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.2rem;
+    padding: 2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--green);
+    max-width: 420px;
+    margin: 0 auto;
+  }
+  .lobby-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    color: var(--green);
+  }
+  .field-label { font-size: 0.7rem; color: var(--muted); letter-spacing: 0.1em; align-self: flex-start; }
+  input[type=text] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--green);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1rem;
+    padding: 0.65rem 1rem;
+    outline: none;
+    transition: border-color 0.2s;
+    letter-spacing: 0.05em;
+  }
+  input[type=text]:focus { border-color: var(--green); box-shadow: 0 0 0 1px rgba(0,255,136,0.15); }
+  input[type=text]::placeholder { color: var(--dim); }
+
+  .btn {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    padding: 0.75rem 2rem;
+    border: 1px solid currentColor;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    width: 100%;
+  }
+  .btn-green { color: var(--green); }
+  .btn-green:hover { background: rgba(0,255,136,0.1); box-shadow: 0 0 12px rgba(0,255,136,0.2); }
+  .btn-red { color: var(--red); }
+  .btn-red:hover { background: rgba(255,68,102,0.1); }
+  .btn-blue { color: var(--blue); }
+  .btn-blue:hover { background: rgba(68,170,255,0.1); }
+  .btn:disabled { opacity: 0.3; cursor: default; }
+  .btn:active:not(:disabled) { transform: scale(0.98); }
+
+  /* ── GAME LAYOUT ── */
+  #game { display: none; }
+  .game-wrap {
+    display: flex;
+    gap: 1.2rem;
+    align-items: flex-start;
+  }
+  .sidebar {
+    width: 180px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+
+  /* ── CANVAS ── */
+  #canvas-wrap {
+    flex: 1;
+    position: relative;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(8,12,16,0.88);
+    gap: 1rem;
+    padding: 1.5rem;
+  }
+  .overlay-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 1.2rem;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+  }
+  .overlay-msg { font-size: 0.75rem; color: var(--muted); text-align: center; line-height: 1.6; }
+
+  /* ── PANEL ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 0.85rem;
+  }
+  .panel-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.2em;
+    color: var(--muted);
+    margin-bottom: 0.7rem;
+  }
+
+  /* ── SCOREBOARD ── */
+  .score-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78rem;
+  }
+  .score-row:last-child { border-bottom: none; }
+  .score-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .score-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .score-val { font-family: 'Orbitron', monospace; font-size: 0.85rem; color: var(--green); min-width: 28px; text-align: right; }
+  .score-row.dead .score-name { color: var(--muted); text-decoration: line-through; }
+  .score-row.dead .score-val { color: var(--muted); }
+
+  /* ── CONTROLS HINT ── */
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+    width: 90px;
+    margin: 0 auto;
+  }
+  .key {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    font-size: 0.65rem;
+    text-align: center;
+    padding: 4px 0;
+    color: var(--muted);
+  }
+  .key.lit { border-color: var(--green); color: var(--green); }
+
+  /* ── STATUS BAR ── */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .status-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(0,255,136,0.6); }
+  .status-dot.waiting { background: var(--yellow); box-shadow: 0 0 6px rgba(255,184,0,0.6); }
+
+  .room-badge {
+    background: rgba(0,255,136,0.08);
+    border: 1px solid rgba(0,255,136,0.2);
+    color: var(--green);
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    letter-spacing: 0.1em;
+  }
+
+  /* ── GAME OVER ── */
+  .score-table { width: 100%; font-size: 0.75rem; border-collapse: collapse; }
+  .score-table td { padding: 4px 8px; }
+  .score-table tr { border-bottom: 1px solid var(--border); }
+  .score-table .winner { color: var(--yellow); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 600px) {
+    .game-wrap { flex-direction: column; }
+    .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; }
+    .sidebar .panel { flex: 1; min-width: 140px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div class="logo">SNAKE<span>.</span>IO</div>
+    <div class="tagline">REAL-TIME MULTIPLAYER — UP TO 4 PLAYERS</div>
+  </header>
+
+  <!-- LOBBY -->
+  <div id="lobby">
+    <div class="lobby-title">// JOIN A GAME</div>
+    <div class="field-label">ROOM CODE</div>
+    <input type="text" id="room-input" placeholder="e.g. ISET2024" maxlength="20" />
+    <div style="font-size:0.68rem; color:var(--muted); align-self:flex-start;">
+      Share this code with friends to play together.
+    </div>
+    <button class="btn btn-green" id="join-btn" onclick="joinGame()">CONNECT TO ROOM</button>
+    <div id="lobby-msg" style="font-size:0.7rem; color:var(--red); display:none;"></div>
+  </div>
+
+  <!-- GAME -->
+  <div id="game">
+    <div class="status-bar">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Connecting...</span>
+      <div style="flex:1"></div>
+      <span id="room-badge" class="room-badge"></span>
+    </div>
+
+    <div style="height: 0.6rem;"></div>
+
+    <div class="game-wrap">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="panel">
+          <div class="panel-title">// PLAYERS</div>
+          <div id="scoreboard"></div>
+        </div>
+        <div class="panel" id="start-panel">
+          <div class="panel-title">// ACTIONS</div>
+          <button class="btn btn-green" id="start-btn" onclick="startGame()">START GAME</button>
+          <div style="height:0.5rem"></div>
+          <button class="btn btn-blue" id="restart-btn" onclick="restartGame()" style="display:none">RESTART</button>
+        </div>
+        <div class="panel">
+          <div class="panel-title">// CONTROLS</div>
+          <div class="controls-grid">
+            <div></div><div class="key lit" id="k-up">▲</div><div></div>
+            <div class="key lit" id="k-left">◄</div>
+            <div class="key lit" id="k-down">▼</div>
+            <div class="key lit" id="k-right">►</div>
+          </div>
+          <div style="font-size:0.65rem; color:var(--muted); text-align:center; margin-top:0.5rem;">WASD or Arrow Keys</div>
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div id="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <div id="overlay">
+          <div class="overlay-title" id="overlay-title" style="color:var(--green)">WAITING FOR PLAYERS</div>
+          <div class="overlay-msg" id="overlay-msg">Press START when everyone has joined.</div>
+          <div id="overlay-actions"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const socket = io();
+let myRoom = null, mySid = null, myColor = '#00ff88';
+let gameState = null, gridW = 30, gridH = 25;
+let players = {};
+let gameActive = false;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+let CELL = 20;
+
+function resizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap');
+  const maxW = wrap.clientWidth;
+  const maxH = Math.min(window.innerHeight - 200, 600);
+  CELL = Math.max(12, Math.min(Math.floor(maxW / gridW), Math.floor(maxH / gridH)));
+  canvas.width  = CELL * gridW;
+  canvas.height = CELL * gridH;
+}
+
+// ── LOBBY ──
+function joinGame() {
+  const room = document.getElementById('room-input').value.trim().toUpperCase() || 'LOBBY';
+  document.getElementById('join-btn').disabled = true;
+  socket.emit('join', { room });
+}
+
+document.getElementById('room-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') joinGame();
+});
+
+// ── SOCKET EVENTS ──
+socket.on('connect', () => {
+  setStatus('online', 'Connected');
+});
+socket.on('disconnect', () => {
+  setStatus('offline', 'Disconnected');
+});
+
+socket.on('error', data => {
+  const msg = document.getElementById('lobby-msg');
+  msg.textContent = data.msg;
+  msg.style.display = 'block';
+  document.getElementById('join-btn').disabled = false;
+});
+
+socket.on('joined', data => {
+  mySid   = data.sid;
+  myRoom  = data.room;
+  myColor = data.color;
+  gridW   = data.grid[0];
+  gridH   = data.grid[1];
+
+  data.players.forEach(p => players[p.sid] = p);
+
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('game').style.display = 'block';
+  document.getElementById('room-badge').textContent = '# ' + myRoom;
+  setStatus('waiting', `Joined as ${data.name}`);
+  resizeCanvas();
+  updateScoreboard();
+  renderIdle();
+});
+
+socket.on('player_joined', data => {
+  players[data.player.sid] = data.player;
+  updateScoreboard();
+  setOverlay('WAITING FOR PLAYERS', `${Object.keys(players).length} player(s) in room. Press START.`);
+});
+
+socket.on('player_left', data => {
+  delete players[data.sid];
+  updateScoreboard();
+});
+
+socket.on('game_started', () => {
+  gameActive = true;
+  overlay.style.display = 'none';
+  document.getElementById('restart-btn').style.display = 'none';
+  setStatus('online', 'Game in progress');
+});
+
+socket.on('state', data => {
+  gameState = data;
+  Object.values(data.snakes).forEach(s => { players[s.sid] = s; });
+  updateScoreboard();
+  render(data);
+});
+
+socket.on('game_over', data => {
+  gameActive = false;
+  const scores = data.scores;
+  const sorted = Object.entries(scores).sort((a,b) => b[1]-a[1]);
+  let html = `<table class="score-table">`;
+  sorted.forEach(([name, score], i) => {
+    html += `<tr class="${i===0?'winner':''}"><td>${i===0?'🏆 ':''} ${name}</td><td style="text-align:right">${score}</td></tr>`;
+  });
+  html += '</table>';
+
+  document.getElementById('overlay-title').style.color = 'var(--yellow)';
+  document.getElementById('overlay-title').textContent = 'GAME OVER';
+  document.getElementById('overlay-msg').innerHTML = html;
+  const acts = document.getElementById('overlay-actions');
+  acts.innerHTML = '<button class="btn btn-green" onclick="restartGame()" style="width:160px">PLAY AGAIN</button>';
+  overlay.style.display = 'flex';
+  document.getElementById('restart-btn').style.display = 'block';
+  setStatus('waiting', 'Game over');
+});
+
+socket.on('restarted', data => {
+  gameActive = false;
+  players = {};
+  data.players.forEach(p => players[p.sid] = p);
+  gameState = data.state;
+  updateScoreboard();
+  overlay.style.display = 'flex';
+  document.getElementById('overlay-title').style.color = 'var(--green)';
+  document.getElementById('overlay-title').textContent = 'READY?';
+  document.getElementById('overlay-msg').textContent = 'Press START to begin.';
+  document.getElementById('overlay-actions').innerHTML = '';
+  document.getElementById('restart-btn').style.display = 'none';
+  setStatus('waiting', 'Waiting to start');
+  render(data.state);
+});
+
+// ── ACTIONS ──
+function startGame() {
+  socket.emit('start', { room: myRoom });
+}
+function restartGame() {
+  socket.emit('restart', { room: myRoom });
+}
+
+// ── INPUT ──
+const DIRS = {
+  ArrowUp:    [0,-1], ArrowDown:  [0,1], ArrowLeft:  [-1,0], ArrowRight: [1,0],
+  w: [0,-1], s: [0,1], a: [-1,0], d: [1,0],
+  W: [0,-1], S: [0,1], A: [-1,0], D: [1,0],
+};
+document.addEventListener('keydown', e => {
+  const d = DIRS[e.key];
+  if (d && gameActive) {
+    e.preventDefault();
+    socket.emit('dir', { room: myRoom, d });
+    // Flash key
+    const map = { '0,-1':'k-up','0,1':'k-down','-1,0':'k-left','1,0':'k-right' };
+    const el = document.getElementById(map[d.toString()]);
+    if (el) { el.style.background='rgba(0,255,136,0.25)'; setTimeout(()=>el.style.background='',120); }
+  }
+});
+
+// ── RENDER ──
+function render(state) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(26,40,64,0.5)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= gridW; x++) {
+    ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, gridH*CELL); ctx.stroke();
+  }
+  for (let y = 0; y <= gridH; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(gridW*CELL, y*CELL); ctx.stroke();
+  }
+
+  // Food
+  state.food.forEach(([fx, fy]) => {
+    const cx = fx*CELL + CELL/2, cy = fy*CELL + CELL/2, r = CELL*0.38;
+    ctx.shadowColor = '#ff4466';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#ff4466';
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,100,130,0.5)';
+    ctx.beginPath(); ctx.arc(cx-r*0.25, cy-r*0.3, r*0.3, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+
+  // Snakes
+  Object.values(state.snakes).forEach(s => {
+    if (!s.body || s.body.length === 0) return;
+    const alpha = s.alive ? 1 : 0.25;
+    ctx.globalAlpha = alpha;
+
+    s.body.forEach(([bx, by], i) => {
+      const isHead = i === 0;
+      const pad = isHead ? 1 : 2;
+      const grd = ctx.createRadialGradient(
+        bx*CELL+CELL/2, by*CELL+CELL/2, 0,
+        bx*CELL+CELL/2, by*CELL+CELL/2, CELL*0.7
+      );
+      grd.addColorStop(0, s.color);
+      grd.addColorStop(1, shadeColor(s.color, -50));
+      ctx.fillStyle = grd;
+
+      if (s.alive && isHead) {
+        ctx.shadowColor = s.color;
+        ctx.shadowBlur = 12;
+      }
+      ctx.fillRect(bx*CELL+pad, by*CELL+pad, CELL-pad*2, CELL-pad*2);
+      ctx.shadowBlur = 0;
+
+      if (isHead && s.alive) {
+        // Eyes
+        const eyeSize = Math.max(2, CELL * 0.12);
+        ctx.fillStyle = '#080c10';
+        ctx.fillRect(bx*CELL + CELL*0.25, by*CELL + CELL*0.2, eyeSize, eyeSize);
+        ctx.fillRect(bx*CELL + CELL*0.6,  by*CELL + CELL*0.2, eyeSize, eyeSize);
+      }
+
+      // Segment border
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(bx*CELL+pad, by*CELL+pad, CELL-pad*2, CELL-pad*2);
+    });
+    ctx.globalAlpha = 1;
+
+    // Name tag above head
+    if (s.alive) {
+      const [hx, hy] = s.body[0];
+      ctx.font = `bold ${Math.max(9, CELL*0.55)}px Share Tech Mono`;
+      ctx.fillStyle = s.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(s.name.split(' ')[1] || s.name, hx*CELL+CELL/2, hy*CELL - 3);
+    }
+  });
+}
+
+function renderIdle() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(26,40,64,0.4)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= gridW; x++) { ctx.beginPath(); ctx.moveTo(x*CELL,0); ctx.lineTo(x*CELL,gridH*CELL); ctx.stroke(); }
+  for (let y = 0; y <= gridH; y++) { ctx.beginPath(); ctx.moveTo(0,y*CELL); ctx.lineTo(gridW*CELL,y*CELL); ctx.stroke(); }
+}
+
+function shadeColor(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, Math.min(255, (n >> 16) + amt));
+  const g = Math.max(0, Math.min(255, ((n >> 8) & 0xff) + amt));
+  const b = Math.max(0, Math.min(255, (n & 0xff) + amt));
+  return '#' + ((r<<16)|(g<<8)|b).toString(16).padStart(6,'0');
+}
+
+// ── SCOREBOARD ──
+function updateScoreboard() {
+  const el = document.getElementById('scoreboard');
+  const sorted = Object.values(players).sort((a,b) => (b.score||0)-(a.score||0));
+  el.innerHTML = sorted.map(p => `
+    <div class="score-row ${p.alive===false?'dead':''}">
+      <div class="score-dot" style="background:${p.color}; box-shadow:0 0 6px ${p.color}55"></div>
+      <div class="score-name">${p.name}${p.sid===mySid?' (you)':''}</div>
+      <div class="score-val">${p.score||0}</div>
+    </div>
+  `).join('');
+}
+
+// ── HELPERS ──
+function setStatus(type, msg) {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'status-dot ' + type;
+  document.getElementById('status-text').textContent = msg;
+}
+function setOverlay(title, msg) {
+  document.getElementById('overlay-title').textContent = title;
+  document.getElementById('overlay-msg').textContent   = msg;
+  overlay.style.display = 'flex';
+}
+
+window.addEventListener('resize', () => { resizeCanvas(); if (gameState) render(gameState); });
+</script>
+</body>
+</html>
